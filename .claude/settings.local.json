@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:trading-api.kalshi.com)",
+      "WebFetch(domain:docs.kalshi.com)",
+      "Bash(pip install:*)"
+    ]
+  }
+}
