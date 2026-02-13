@@ -230,8 +230,8 @@ print(model_cal.to_string(index=False))
 
 # Summary statistics
 valid_mask = df_calib['model_prob'].notna() & df_calib['settled_yes'].notna()
-pred = df_calib.loc[valid_mask, 'model_prob'].values
-actual = df_calib.loc[valid_mask, 'settled_yes'].values
+pred = df_calib.loc[valid_mask, 'model_prob'].values.astype(np.float64)
+actual = df_calib.loc[valid_mask, 'settled_yes'].values.astype(np.float64)
 
 brier_score = np.mean((pred - actual) ** 2)
 log_loss_vals = -(actual * np.log(np.clip(pred, 1e-10, 1-1e-10)) +
@@ -275,8 +275,8 @@ if len(df_market) > 0:
     )
     print(market_cal.to_string(index=False))
 
-    mkt_pred = df_market['market_mid'].values
-    mkt_actual = df_market['settled_yes'].values
+    mkt_pred = df_market['market_mid'].values.astype(np.float64)
+    mkt_actual = df_market['settled_yes'].values.astype(np.float64)
     mkt_brier = np.mean((mkt_pred - mkt_actual) ** 2)
     mkt_logloss_vals = -(mkt_actual * np.log(np.clip(mkt_pred, 1e-10, 1-1e-10)) +
                          (1-mkt_actual) * np.log(np.clip(1-mkt_pred, 1e-10, 1-1e-10)))
@@ -295,7 +295,7 @@ if len(df_market) > 0:
 
     # Compare model vs market on the SAME set of contracts
     print("\n--- 5b. Model vs Market Comparison (same contract set) ---")
-    model_pred_same = df_market['model_prob'].values
+    model_pred_same = df_market['model_prob'].values.astype(np.float64)
     model_brier_same = np.mean((model_pred_same - mkt_actual) ** 2)
     model_logloss_same_vals = -(mkt_actual * np.log(np.clip(model_pred_same, 1e-10, 1-1e-10)) +
                                 (1-mkt_actual) * np.log(np.clip(1-model_pred_same, 1e-10, 1-1e-10)))
