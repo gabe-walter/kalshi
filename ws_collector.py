@@ -265,7 +265,7 @@ class WSCollector:
                 result = await loop.run_in_executor(
                     None,
                     lambda s=series: self.kalshi_rest.get_markets(
-                        series_ticker=f"KX{asset}", status="open", limit=1000
+                        series_ticker=f"KX{asset}D", status="open", limit=1000
                     ),
                 )
                 for m in result.get("markets", []):
