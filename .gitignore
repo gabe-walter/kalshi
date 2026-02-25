@@ -9,3 +9,5 @@ data/paper_trading_v2/snapshots/
 *.pem
 bot-key.pem
 credentials*.json
+param_optimizer.py
+data/param_optimizer_results.csv
