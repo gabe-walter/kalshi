@@ -9,7 +9,7 @@ distributions for robustness testing.
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List, Dict
 
 
 @dataclass
@@ -27,7 +27,7 @@ class MonteCarloResult:
     max_drawdowns: np.ndarray
     max_drawdown_pcts: np.ndarray
 
-    def percentile_paths(self, percentiles: list[float] = None) -> dict[float, np.ndarray]:
+    def percentile_paths(self, percentiles: Optional[List[float]] = None) -> Dict[float, np.ndarray]:
         """Get percentile equity paths for fan chart."""
         if percentiles is None:
             percentiles = [5, 25, 50, 75, 95]
@@ -128,7 +128,7 @@ def simulate(positions_df: pd.DataFrame,
 
 
 def sensitivity_analysis(positions_df: pd.DataFrame,
-                          edge_multipliers: Optional[list[float]] = None,
+                          edge_multipliers: Optional[List[float]] = None,
                           n_paths: int = 5000,
                           n_trades: Optional[int] = None,
                           initial_bankroll: float = 10000.0,
@@ -171,7 +171,7 @@ def sensitivity_analysis(positions_df: pd.DataFrame,
 
 
 def fan_chart_data(result: MonteCarloResult,
-                    percentiles: Optional[list[float]] = None) -> pd.DataFrame:
+                    percentiles: Optional[List[float]] = None) -> pd.DataFrame:
     """Convert MonteCarloResult into a long-format DataFrame for plotting.
 
     Returns DataFrame with: trade_number, percentile, bankroll.

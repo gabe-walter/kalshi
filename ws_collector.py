@@ -114,6 +114,10 @@ class WSCollector:
     # =========================================================================
 
     def _sign(self, timestamp_ms: str, method: str, path: str) -> str:
+        if self.private_key is None:
+            raise RuntimeError(
+                "No private key loaded. Set KALSHI_PRIVATE_KEY_PATH environment variable."
+            )
         message = f"{timestamp_ms}{method}{path}".encode("utf-8")
         signature = self.private_key.sign(
             message,

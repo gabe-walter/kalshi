@@ -97,9 +97,10 @@ end_date = end_date if end_date else None
 def load_all_data(base_dir_str, start_date, end_date):
     base = Path(base_dir_str)
     enriched = load_enriched_snapshots(base, start_date, end_date)
-    trade_log = load_trade_log(PAPER_TRADER_DIR)
-    equity = load_equity_curve(PAPER_TRADER_DIR)
-    positions = load_positions(PAPER_TRADER_DIR)
+    # Load trade data from the selected data source
+    trade_log = load_trade_log(base)
+    equity = load_equity_curve(base)
+    positions = load_positions(base)
     spots = load_spot_prices(base, start_date, end_date)
     return enriched, trade_log, equity, positions, spots
 
@@ -174,17 +175,21 @@ if page == "P&L Analysis":
 
         # Drawdown subplot
         st.subheader("Drawdown")
-        dd_chart = (
-            alt.Chart(equity[equity["drawdown"] > 0])
-            .mark_area(color="#FF4444", opacity=0.4)
-            .encode(
-                x=alt.X("timestamp:T", title="Time"),
-                y=alt.Y("drawdown_pct:Q", title="Drawdown %",
-                         scale=alt.Scale(reverse=True)),
+        dd_data = equity[equity["drawdown"] > 0]
+        if not dd_data.empty:
+            dd_chart = (
+                alt.Chart(dd_data)
+                .mark_area(color="#FF4444", opacity=0.4)
+                .encode(
+                    x=alt.X("timestamp:T", title="Time"),
+                    y=alt.Y("drawdown_pct:Q", title="Drawdown %",
+                             scale=alt.Scale(reverse=True)),
+                )
+                .properties(height=200)
             )
-            .properties(height=200)
-        )
-        st.altair_chart(dd_chart, use_container_width=True)
+            st.altair_chart(dd_chart, use_container_width=True)
+        else:
+            st.info("No drawdowns recorded yet.")
     else:
         st.info("No equity curve data available.")
 
