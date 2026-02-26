@@ -19,6 +19,7 @@ import altair as alt
 
 from analysis.data_loader import (
     load_enriched_snapshots,
+    load_ws_tickers,
     load_trade_log,
     load_equity_curve,
     load_positions,
@@ -369,22 +370,43 @@ elif page == "Model Calibration":
     st.caption("Track how model vs market divergence evolves for a specific contract. "
                "Persistent gaps = difference of opinion. Brief spikes = transient edge.")
 
-    if not enriched.empty and "market_ticker" in enriched.columns:
-        # Get markets that have multiple snapshots
-        market_counts = enriched.groupby("market_ticker").size()
+    # Try to load raw ticker data (more granular) - falls back to enriched snapshots
+    raw_tickers = load_ws_tickers(base_dir, start_date, end_date)
+    use_raw_data = (not raw_tickers.empty and "model_prob" in raw_tickers.columns
+                    and raw_tickers["model_prob"].notna().any())
+
+    if use_raw_data:
+        time_series_data = raw_tickers.copy()
+        time_series_data = time_series_data.rename(columns={"received_at": "snapshot_time"})
+        data_source_label = "raw ticker updates (second-by-second)"
+    elif not enriched.empty and "market_ticker" in enriched.columns:
+        time_series_data = enriched.copy()
+        data_source_label = "enriched snapshots (5-min intervals)"
+    else:
+        time_series_data = pd.DataFrame()
+        data_source_label = None
+
+    if not time_series_data.empty and "market_ticker" in time_series_data.columns:
+        # Get markets that have multiple data points
+        market_counts = time_series_data.groupby("market_ticker").size()
         markets_with_history = market_counts[market_counts > 1].index.tolist()
 
         if markets_with_history:
+            st.caption(f"Data source: {data_source_label}")
+
             selected_market = st.selectbox(
                 "Select market to analyze",
                 options=sorted(markets_with_history),
                 index=0
             )
 
-            market_history = enriched[enriched["market_ticker"] == selected_market].copy()
+            market_history = time_series_data[time_series_data["market_ticker"] == selected_market].copy()
             market_history = market_history.sort_values("snapshot_time")
 
-            if not market_history.empty and "model_prob" in market_history.columns:
+            # Filter to rows with model_prob
+            market_history = market_history[market_history["model_prob"].notna()]
+
+            if not market_history.empty:
                 # Compute all the probability series
                 market_history["model_yes"] = market_history["model_prob"] * 100
                 market_history["market_yes"] = market_history["yes_ask"]
@@ -404,7 +426,7 @@ elif page == "Model Calibration":
                     st.markdown("**YES Side (model vs yes_ask)**")
                     yes_chart = (
                         alt.Chart(yes_data)
-                        .mark_line(point=True)
+                        .mark_line(point=False)
                         .encode(
                             x=alt.X("snapshot_time:T", title="Time"),
                             y=alt.Y("price:Q", title="Price (cents)", scale=alt.Scale(zero=False)),
@@ -423,7 +445,7 @@ elif page == "Model Calibration":
                     st.markdown("**NO Side (model vs no_ask)**")
                     no_chart = (
                         alt.Chart(no_data)
-                        .mark_line(point=True)
+                        .mark_line(point=False)
                         .encode(
                             x=alt.X("snapshot_time:T", title="Time"),
                             y=alt.Y("price:Q", title="Price (cents)", scale=alt.Scale(zero=False)),
@@ -436,13 +458,15 @@ elif page == "Model Calibration":
                     )
                     st.altair_chart(no_chart, use_container_width=True)
 
-                # Show snapshot count
-                st.caption(f"Showing {len(market_history)} snapshots from "
+                # Show data point count
+                st.caption(f"Showing {len(market_history)} data points from "
                           f"{market_history['snapshot_time'].min()} to {market_history['snapshot_time'].max()}")
+            else:
+                st.info("No model probabilities available for this market yet.")
         else:
-            st.info("Need multiple snapshots of the same market to show time series.")
+            st.info("Need multiple data points for the same market to show time series.")
     else:
-        st.info("No enriched data available.")
+        st.info("No data available for time series analysis.")
 
     st.divider()
 

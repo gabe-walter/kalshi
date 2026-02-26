@@ -196,11 +196,39 @@ class WSCollector:
 
         received_at = datetime.now(timezone.utc)
 
+        # Get market metadata
+        meta = self.market_meta.get(ticker, {})
+        asset = meta.get("asset")
+
+        # Compute model probability using cached IV surface and spot
+        model_data = self._compute_model_prob(ticker)
+        model_prob = model_data.get("model_prob")
+        sigma_distance = model_data.get("sigma_distance")
+
+        # Compute mispricing if we have model_prob and prices
+        yes_ask = msg.get("yes_ask")
+        yes_bid = msg.get("yes_bid")
+        mispricing_yes = None
+        mispricing_no = None
+        if model_prob is not None and yes_ask is not None and yes_ask > 0:
+            model_yes_cents = model_prob * 100
+            mispricing_yes = model_yes_cents - yes_ask
+        if model_prob is not None and yes_bid is not None and yes_bid > 0:
+            model_no_cents = (1 - model_prob) * 100
+            no_ask = 100 - yes_bid
+            mispricing_no = model_no_cents - no_ask
+
+        # Get current spot price for reference
+        spot = self.spots.get(asset) if asset else None
+
         record = {
             "received_at": received_at.isoformat(),
             "market_ticker": ticker,
-            "yes_bid": msg.get("yes_bid"),
-            "yes_ask": msg.get("yes_ask"),
+            "asset": asset,
+            "strike": meta.get("floor_strike"),
+            "close_time": meta.get("close_time"),
+            "yes_bid": yes_bid,
+            "yes_ask": yes_ask,
             "yes_bid_dollars": msg.get("yes_bid_dollars"),
             "yes_ask_dollars": msg.get("yes_ask_dollars"),
             "last_price": msg.get("price"),
@@ -212,6 +240,12 @@ class WSCollector:
             "dollar_volume": msg.get("dollar_volume"),
             "dollar_open_interest": msg.get("dollar_open_interest"),
             "ts": msg.get("ts"),
+            # Enrichment fields
+            "spot_price": spot,
+            "model_prob": model_prob,
+            "sigma_distance": sigma_distance,
+            "mispricing_yes": mispricing_yes,
+            "mispricing_no": mispricing_no,
         }
 
         self.ticker_buffer.append(record)
