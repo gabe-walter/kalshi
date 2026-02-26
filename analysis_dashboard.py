@@ -307,31 +307,56 @@ elif page == "Model Calibration":
 
     # ---- Model vs Market Scatter ----
     st.subheader("Model Probability vs Market Price")
+    st.caption("Points above diagonal = model thinks it's more likely than market (underpriced, good to buy)")
     scatter_data = model_vs_market_scatter(enriched)
+
     if not scatter_data.empty:
+        # model_prob_no and market_prob_no are now computed correctly in model_vs_market_scatter()
+        # market_prob_no = (100 - yes_bid) / 100 = no_ask / 100
+
         # Subsample if too many points
         if len(scatter_data) > 5000:
             scatter_data = scatter_data.sample(5000, random_state=42)
 
-        scatter = (
-            alt.Chart(scatter_data)
-            .mark_circle(size=10, opacity=0.3)
-            .encode(
-                x=alt.X("market_prob:Q", title="Kalshi Implied Prob (yes_ask/100)",
-                         scale=alt.Scale(domain=[0, 1])),
-                y=alt.Y("model_prob:Q", title="IV Surface Model Prob",
-                         scale=alt.Scale(domain=[0, 1])),
-                color=alt.Color("asset:N", legend=alt.Legend(title="Asset")),
-                tooltip=["market_ticker", "model_prob", "market_prob", "asset"],
-            )
-        )
         diagonal = (
             alt.Chart(pd.DataFrame({"x": [0, 1], "y": [0, 1]}))
             .mark_line(color="red", strokeDash=[5, 5])
             .encode(x="x:Q", y="y:Q")
         )
+
+        st.markdown("**Buy YES opportunities**")
+        scatter_yes = (
+            alt.Chart(scatter_data)
+            .mark_circle(size=10, opacity=0.3)
+            .encode(
+                x=alt.X("market_prob:Q", title="Market (yes_ask/100)",
+                         scale=alt.Scale(domain=[0, 1])),
+                y=alt.Y("model_prob:Q", title="Model P(YES)",
+                         scale=alt.Scale(domain=[0, 1])),
+                color=alt.Color("asset:N", legend=alt.Legend(title="Asset")),
+                tooltip=["market_ticker", "model_prob", "market_prob", "asset"],
+            )
+        )
         st.altair_chart(
-            (scatter + diagonal).properties(height=450, title="Points above diagonal = model thinks YES is more likely than market"),
+            (scatter_yes + diagonal).properties(height=400),
+            use_container_width=True,
+        )
+
+        st.markdown("**Buy NO opportunities**")
+        scatter_no = (
+            alt.Chart(scatter_data)
+            .mark_circle(size=10, opacity=0.3)
+            .encode(
+                x=alt.X("market_prob_no:Q", title="Market (no_ask/100)",
+                         scale=alt.Scale(domain=[0, 1])),
+                y=alt.Y("model_prob_no:Q", title="Model P(NO)",
+                         scale=alt.Scale(domain=[0, 1])),
+                color=alt.Color("asset:N", legend=alt.Legend(title="Asset")),
+                tooltip=["market_ticker", "model_prob_no", "market_prob_no", "asset"],
+            )
+        )
+        st.altair_chart(
+            (scatter_no + diagonal).properties(height=400),
             use_container_width=True,
         )
     else:
@@ -339,16 +364,101 @@ elif page == "Model Calibration":
 
     st.divider()
 
+    # ---- Single Market Time Series ----
+    st.subheader("Single Market Edge Over Time")
+    st.caption("Track how model vs market divergence evolves for a specific contract. "
+               "Persistent gaps = difference of opinion. Brief spikes = transient edge.")
+
+    if not enriched.empty and "market_ticker" in enriched.columns:
+        # Get markets that have multiple snapshots
+        market_counts = enriched.groupby("market_ticker").size()
+        markets_with_history = market_counts[market_counts > 1].index.tolist()
+
+        if markets_with_history:
+            selected_market = st.selectbox(
+                "Select market to analyze",
+                options=sorted(markets_with_history),
+                index=0
+            )
+
+            market_history = enriched[enriched["market_ticker"] == selected_market].copy()
+            market_history = market_history.sort_values("snapshot_time")
+
+            if not market_history.empty and "model_prob" in market_history.columns:
+                # Compute all the probability series
+                market_history["model_yes"] = market_history["model_prob"] * 100
+                market_history["market_yes"] = market_history["yes_ask"]
+                market_history["model_no"] = (1 - market_history["model_prob"]) * 100
+                market_history["market_no"] = 100 - market_history["yes_bid"]
+
+                # Melt for plotting
+                plot_data = market_history[["snapshot_time", "model_yes", "market_yes", "model_no", "market_no"]].melt(
+                    id_vars=["snapshot_time"],
+                    var_name="series",
+                    value_name="price"
+                )
+
+                # YES side chart
+                yes_data = plot_data[plot_data["series"].isin(["model_yes", "market_yes"])]
+                if not yes_data.empty:
+                    st.markdown("**YES Side (model vs yes_ask)**")
+                    yes_chart = (
+                        alt.Chart(yes_data)
+                        .mark_line(point=True)
+                        .encode(
+                            x=alt.X("snapshot_time:T", title="Time"),
+                            y=alt.Y("price:Q", title="Price (cents)", scale=alt.Scale(domain=[0, 100])),
+                            color=alt.Color("series:N", legend=alt.Legend(title=""),
+                                           scale=alt.Scale(domain=["model_yes", "market_yes"],
+                                                          range=["#00D4AA", "#FF6B6B"])),
+                            tooltip=["snapshot_time:T", "series", "price"]
+                        )
+                        .properties(height=300)
+                    )
+                    st.altair_chart(yes_chart, use_container_width=True)
+
+                # NO side chart
+                no_data = plot_data[plot_data["series"].isin(["model_no", "market_no"])]
+                if not no_data.empty:
+                    st.markdown("**NO Side (model vs no_ask)**")
+                    no_chart = (
+                        alt.Chart(no_data)
+                        .mark_line(point=True)
+                        .encode(
+                            x=alt.X("snapshot_time:T", title="Time"),
+                            y=alt.Y("price:Q", title="Price (cents)", scale=alt.Scale(domain=[0, 100])),
+                            color=alt.Color("series:N", legend=alt.Legend(title=""),
+                                           scale=alt.Scale(domain=["model_no", "market_no"],
+                                                          range=["#00D4AA", "#FF6B6B"])),
+                            tooltip=["snapshot_time:T", "series", "price"]
+                        )
+                        .properties(height=300)
+                    )
+                    st.altair_chart(no_chart, use_container_width=True)
+
+                # Show snapshot count
+                st.caption(f"Showing {len(market_history)} snapshots from "
+                          f"{market_history['snapshot_time'].min()} to {market_history['snapshot_time'].max()}")
+        else:
+            st.info("Need multiple snapshots of the same market to show time series.")
+    else:
+        st.info("No enriched data available.")
+
+    st.divider()
+
     # ---- Mispricing Distribution ----
-    st.subheader("Mispricing Distribution")
-    misp = mispricing_distribution(enriched, "mispricing_yes")
-    if not misp.empty:
-        hist = (
-            alt.Chart(misp)
+    st.subheader("Mispricing Distribution (Buy Opportunities)")
+    st.caption("Positive = underpriced (good to buy). Negative = overpriced (avoid).")
+
+    st.markdown("**Buy YES Mispricing**")
+    misp_yes = mispricing_distribution(enriched, "mispricing_yes")
+    if not misp_yes.empty:
+        hist_yes = (
+            alt.Chart(misp_yes)
             .mark_bar(opacity=0.7)
             .encode(
                 x=alt.X("mispricing_yes:Q", bin=alt.Bin(maxbins=50),
-                         title="Mispricing (cents): model_yes - yes_ask"),
+                         title="model_yes - yes_ask (cents)"),
                 y=alt.Y("count()", title="Count"),
                 color=alt.Color("asset:N"),
             )
@@ -359,13 +469,32 @@ elif page == "Model Calibration":
             .mark_rule(color="red", strokeDash=[5, 5])
             .encode(x="x:Q")
         )
-        st.altair_chart((hist + zero_line), use_container_width=True)
+        st.altair_chart((hist_yes + zero_line), use_container_width=True)
+        st.metric("Mean", f"{misp_yes['mispricing_yes'].mean():.2f}¢")
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Mean Mispricing", f"{misp['mispricing_yes'].mean():.2f}c")
-        col2.metric("Median Mispricing", f"{misp['mispricing_yes'].median():.2f}c")
-        col3.metric("Observations", f"{len(misp):,}")
-    else:
+    st.markdown("**Buy NO Mispricing**")
+    misp_no = mispricing_distribution(enriched, "mispricing_no")
+    if not misp_no.empty:
+        hist_no = (
+            alt.Chart(misp_no)
+            .mark_bar(opacity=0.7)
+            .encode(
+                x=alt.X("mispricing_no:Q", bin=alt.Bin(maxbins=50),
+                         title="model_no - no_ask (cents)"),
+                y=alt.Y("count()", title="Count"),
+                color=alt.Color("asset:N"),
+            )
+            .properties(height=300)
+        )
+        zero_line = (
+            alt.Chart(pd.DataFrame({"x": [0]}))
+            .mark_rule(color="red", strokeDash=[5, 5])
+            .encode(x="x:Q")
+        )
+        st.altair_chart((hist_no + zero_line), use_container_width=True)
+        st.metric("Mean", f"{misp_no['mispricing_no'].mean():.2f}¢")
+
+    if misp_yes.empty and misp_no.empty:
         st.info("No mispricing data available.")
 
     st.divider()

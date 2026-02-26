@@ -151,8 +151,9 @@ def mispricing_distribution(enriched_df: pd.DataFrame,
 def model_vs_market_scatter(enriched_df: pd.DataFrame) -> pd.DataFrame:
     """Build data for model_prob vs market implied prob scatter plot.
 
-    Market implied prob = yes_ask / 100.
-    Returns DataFrame with: model_prob, market_prob, mispricing, asset.
+    Returns DataFrame with columns for both YES and NO buy opportunities:
+    - market_prob_yes = yes_ask / 100 (cost to buy YES)
+    - market_prob_no = (100 - yes_bid) / 100 (cost to buy NO)
     """
     if enriched_df.empty:
         return pd.DataFrame()
@@ -160,16 +161,26 @@ def model_vs_market_scatter(enriched_df: pd.DataFrame) -> pd.DataFrame:
     df = enriched_df[
         enriched_df["model_prob"].notna() &
         enriched_df["yes_ask"].notna() &
-        (enriched_df["yes_ask"] > 0)
+        enriched_df["yes_bid"].notna() &
+        (enriched_df["yes_ask"] > 0) &
+        (enriched_df["yes_bid"] > 0)
     ].copy()
 
     if df.empty:
         return pd.DataFrame()
 
+    # YES side: pay yes_ask to buy YES
     df["market_prob"] = df["yes_ask"] / 100.0
-    cols = ["snapshot_time", "market_ticker", "asset", "model_prob", "market_prob"]
+    # NO side: pay (100 - yes_bid) to buy NO
+    df["market_prob_no"] = (100.0 - df["yes_bid"]) / 100.0
+    df["model_prob_no"] = 1.0 - df["model_prob"]
+
+    cols = ["snapshot_time", "market_ticker", "asset", "model_prob", "market_prob",
+            "model_prob_no", "market_prob_no"]
     if "mispricing_yes" in df.columns:
         cols.append("mispricing_yes")
+    if "mispricing_no" in df.columns:
+        cols.append("mispricing_no")
     if "sigma_distance" in df.columns:
         cols.append("sigma_distance")
     if "hours_to_settlement" in df.columns:
