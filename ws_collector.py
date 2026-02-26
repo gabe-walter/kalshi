@@ -109,6 +109,28 @@ class WSCollector:
         self._running = False
         self._subscribed_tickers: set = set()
 
+        # Connection health tracking
+        self._last_message_time: Optional[datetime] = None
+        self._reconnect_count = 0
+        self._connection_log_path = self.data_dir / "connection_log.txt"
+
+    def _log_connection_event(self, event: str, details: str = ""):
+        """Log connection events to both console and file."""
+        now = datetime.now(timezone.utc)
+        timestamp = now.strftime("%Y-%m-%d %H:%M:%S UTC")
+        msg = f"[{timestamp}] {event}"
+        if details:
+            msg += f" - {details}"
+        print(f"  [Connection] {msg}")
+
+        # Append to log file
+        try:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            with open(self._connection_log_path, "a") as f:
+                f.write(msg + "\n")
+        except Exception as e:
+            print(f"  [Connection] Failed to write log: {e}")
+
     # =========================================================================
     # WebSocket Auth
     # =========================================================================
@@ -195,6 +217,7 @@ class WSCollector:
             return
 
         received_at = datetime.now(timezone.utc)
+        self._last_message_time = received_at
 
         # Get market metadata
         meta = self.market_meta.get(ticker, {})
@@ -541,6 +564,19 @@ class WSCollector:
                 f"{len(self.market_meta)} in metadata cache\n"
             )
 
+    async def _health_check_loop(self):
+        """Monitor connection health - log warning if no messages received."""
+        stale_threshold = 120  # seconds without messages before warning
+        while self._running:
+            await asyncio.sleep(30)
+            if self._last_message_time:
+                since_last = (datetime.now(timezone.utc) - self._last_message_time).total_seconds()
+                if since_last > stale_threshold:
+                    self._log_connection_event(
+                        "STALE_CONNECTION",
+                        f"No messages for {since_last:.0f}s (threshold: {stale_threshold}s)"
+                    )
+
     # =========================================================================
     # Main Loop
     # =========================================================================
@@ -567,17 +603,27 @@ class WSCollector:
         print("\n[2] Initial market metadata fetch...")
         await self._refresh_markets()
 
+        # Log startup
+        self._log_connection_event("STARTUP", f"Collector started, assets={self.assets}")
+
         # 2. Connect websocket with reconnect loop
         while self._running:
             try:
                 await self._run_websocket_session()
             except asyncio.CancelledError:
+                self._log_connection_event("SHUTDOWN", "Cancelled")
                 break
             except Exception as e:
-                print(f"\n  [WS] Connection error: {e}")
+                self._reconnect_count += 1
+                self._log_connection_event(
+                    "DISCONNECTED",
+                    f"Error: {e}, reconnect #{self._reconnect_count}"
+                )
                 if self._running:
-                    print("  [WS] Reconnecting in 5s...")
-                    await asyncio.sleep(5)
+                    # Exponential backoff: 5s, 10s, 20s, max 60s
+                    wait_time = min(5 * (2 ** min(self._reconnect_count - 1, 3)), 60)
+                    self._log_connection_event("RECONNECTING", f"Waiting {wait_time}s...")
+                    await asyncio.sleep(wait_time)
 
         # Final flush
         print("\nFinal flush...")
@@ -593,7 +639,9 @@ class WSCollector:
         """Single websocket session (reconnects on disconnect)."""
         print("\n[3] Connecting to Kalshi WebSocket...")
         ws = await self._ws_connect()
-        print("  Connected!")
+        self._log_connection_event("CONNECTED", f"Reconnect count was {self._reconnect_count}")
+        self._reconnect_count = 0  # Reset on successful connection
+        self._last_message_time = datetime.now(timezone.utc)
 
         # Subscribe to all ticker and trade updates (filter in handler)
         print("[4] Subscribing to ticker + trade channels (all markets)...")
@@ -607,6 +655,7 @@ class WSCollector:
             asyncio.create_task(self._refresh_markets_loop()),
             asyncio.create_task(self._flush_loop()),
             asyncio.create_task(self._stats_loop()),
+            asyncio.create_task(self._health_check_loop()),
         ]
 
         try:
@@ -628,12 +677,13 @@ class WSCollector:
                         print(f"  [WS] Confirmed subscription: {channel} (sid={sid})")
                     elif msg_type == "error":
                         print(f"  [WS] Error: {data}")
+                        self._log_connection_event("WS_ERROR", str(data))
 
                 elif msg.type == aiohttp.WSMsgType.ERROR:
-                    print(f"  [WS] Error: {ws.exception()}")
+                    self._log_connection_event("WS_ERROR", str(ws.exception()))
                     break
                 elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING):
-                    print("  [WS] Connection closed by server")
+                    self._log_connection_event("CLOSED_BY_SERVER", "Connection closed by server")
                     break
         finally:
             for t in tasks:
