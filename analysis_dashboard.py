@@ -407,7 +407,7 @@ elif page == "Model Calibration":
                         .mark_line(point=True)
                         .encode(
                             x=alt.X("snapshot_time:T", title="Time"),
-                            y=alt.Y("price:Q", title="Price (cents)", scale=alt.Scale(domain=[0, 100])),
+                            y=alt.Y("price:Q", title="Price (cents)", scale=alt.Scale(zero=False)),
                             color=alt.Color("series:N", legend=alt.Legend(title=""),
                                            scale=alt.Scale(domain=["model_yes", "market_yes"],
                                                           range=["#00D4AA", "#FF6B6B"])),
@@ -426,7 +426,7 @@ elif page == "Model Calibration":
                         .mark_line(point=True)
                         .encode(
                             x=alt.X("snapshot_time:T", title="Time"),
-                            y=alt.Y("price:Q", title="Price (cents)", scale=alt.Scale(domain=[0, 100])),
+                            y=alt.Y("price:Q", title="Price (cents)", scale=alt.Scale(zero=False)),
                             color=alt.Color("series:N", legend=alt.Legend(title=""),
                                            scale=alt.Scale(domain=["model_no", "market_no"],
                                                           range=["#00D4AA", "#FF6B6B"])),
