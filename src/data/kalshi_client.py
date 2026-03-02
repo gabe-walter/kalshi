@@ -120,6 +120,102 @@ class KalshiClient:
         """Get orderbook for a market."""
         return self._request("GET", f"/markets/{ticker}/orderbook", params={"depth": depth})
 
+    # =========================================================================
+    # Portfolio / Trading Endpoints
+    # =========================================================================
+
+    def get_balance(self) -> dict:
+        """Get account balance and portfolio value (in cents)."""
+        return self._request("GET", "/portfolio/balance")
+
+    def get_positions(self, settlement_status: str = None, ticker: str = None,
+                      event_ticker: str = None, limit: int = 200, cursor: str = None) -> dict:
+        """
+        Get current positions.
+
+        Args:
+            settlement_status: Filter by 'settled' or 'unsettled'
+            ticker: Filter by market ticker
+            event_ticker: Filter by event ticker
+            limit: Max results
+            cursor: Pagination cursor
+        """
+        params = {"limit": limit}
+        if settlement_status:
+            params["settlement_status"] = settlement_status
+        if ticker:
+            params["ticker"] = ticker
+        if event_ticker:
+            params["event_ticker"] = event_ticker
+        if cursor:
+            params["cursor"] = cursor
+        return self._request("GET", "/portfolio/positions", params=params)
+
+    def get_fills(self, ticker: str = None, order_id: str = None,
+                  limit: int = 100, cursor: str = None) -> dict:
+        """Get trade fills."""
+        params = {"limit": limit}
+        if ticker:
+            params["ticker"] = ticker
+        if order_id:
+            params["order_id"] = order_id
+        if cursor:
+            params["cursor"] = cursor
+        return self._request("GET", "/portfolio/fills", params=params)
+
+    def create_order(self, ticker: str, side: str, action: str, count: int,
+                     order_type: str = "limit", yes_price: int = None,
+                     no_price: int = None, client_order_id: str = None,
+                     buy_max_cost: int = None) -> dict:
+        """
+        Place an order.
+
+        Args:
+            ticker: Market ticker
+            side: 'yes' or 'no'
+            action: 'buy' or 'sell'
+            count: Number of contracts
+            order_type: 'limit' or 'market'
+            yes_price: Price in cents for yes side (1-99)
+            no_price: Price in cents for no side (1-99)
+            client_order_id: Client-side dedup ID
+            buy_max_cost: Max cost in cents (implies fill-or-kill)
+        """
+        data = {
+            "ticker": ticker,
+            "side": side,
+            "action": action,
+            "count": count,
+            "type": order_type,
+        }
+        if yes_price is not None:
+            data["yes_price"] = yes_price
+        if no_price is not None:
+            data["no_price"] = no_price
+        if client_order_id:
+            data["client_order_id"] = client_order_id
+        if buy_max_cost is not None:
+            data["buy_max_cost"] = buy_max_cost
+        return self._request("POST", "/portfolio/orders", data=data)
+
+    def get_order(self, order_id: str) -> dict:
+        """Get a single order by ID."""
+        return self._request("GET", f"/portfolio/orders/{order_id}")
+
+    def get_orders(self, ticker: str = None, status: str = None,
+                   limit: int = 100) -> dict:
+        """Get orders, optionally filtered."""
+        params = {"limit": limit}
+        if ticker:
+            params["ticker"] = ticker
+        if status:
+            params["status"] = status
+        return self._request("GET", "/portfolio/orders", params=params)
+
+    def cancel_order(self, order_id: str) -> dict:
+        """Cancel (zero out) a resting order."""
+        return self._request("DELETE", f"/portfolio/orders/{order_id}")
+
     def get_events(self, series_ticker: str = None, status: str = None, limit: int = 100) -> dict:
         """Get list of events."""
         params = {"limit": limit}
