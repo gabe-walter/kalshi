@@ -97,6 +97,10 @@ class WSCollector:
         self.iv_surfaces: Dict[str, object] = {}
         self.spots: Dict[str, float] = {}
 
+        # Orderbook depth cache: ticker -> {yes_levels: [...], no_levels: [...], fetched_at: str}
+        self.orderbook_cache: Dict[str, dict] = {}
+        self.orderbook_interval = flush_interval  # sync with flush cycle
+
         # Stats
         self.ticker_count = 0
         self.trade_count = 0
@@ -388,6 +392,95 @@ class WSCollector:
                 print(f"  [Deribit] Error fetching {asset}: {e}")
 
     # =========================================================================
+    # Orderbook Depth
+    # =========================================================================
+
+    async def _refresh_orderbooks_loop(self):
+        while self._running:
+            try:
+                await self._refresh_orderbooks()
+            except Exception as e:
+                print(f"  [Orderbook] Error: {e}")
+            await asyncio.sleep(self.orderbook_interval)
+
+    async def _refresh_orderbooks(self):
+        """Fetch orderbook depth for markets within the IV grid."""
+        loop = asyncio.get_event_loop()
+        now = datetime.now(timezone.utc)
+
+        # Only fetch for markets that have model_prob (within IV grid)
+        candidates = []
+        for ticker in self.latest_ticker:
+            model = self._compute_model_prob(ticker)
+            if model.get("model_prob") is not None:
+                candidates.append(ticker)
+
+        if not candidates:
+            return
+
+        fetched = 0
+        errors = 0
+        for ticker in candidates:
+            try:
+                result = await loop.run_in_executor(
+                    None,
+                    lambda t=ticker: self.kalshi_rest.get_market_orderbook(t, depth=20),
+                )
+                book = result.get("orderbook", {})
+                self.orderbook_cache[ticker] = {
+                    "yes_levels": book.get("yes", []) or [],
+                    "no_levels": book.get("no", []) or [],
+                    "fetched_at": now.isoformat(),
+                }
+                fetched += 1
+                await asyncio.sleep(0.15)  # rate limit: ~7 req/s
+            except Exception:
+                errors += 1
+
+        print(f"  [Orderbook] Fetched {fetched}/{len(candidates)} books "
+              f"({errors} errors)")
+
+    def _get_orderbook_depth(self, ticker: str) -> dict:
+        """
+        Extract depth summary from cached orderbook.
+
+        Returns dict with:
+          yes_best_bid_depth: contracts available at best yes bid
+          no_best_bid_depth: contracts available at best no bid
+          yes_total_depth: total yes bid depth across all levels
+          no_total_depth: total no bid depth across all levels
+          yes_levels: number of price levels with bids
+          no_levels: number of price levels with bids
+        """
+        cache = self.orderbook_cache.get(ticker)
+        if not cache:
+            return {
+                "yes_best_bid_depth": None,
+                "no_best_bid_depth": None,
+                "yes_total_depth": None,
+                "no_total_depth": None,
+                "yes_levels": None,
+                "no_levels": None,
+            }
+
+        yes_levels = cache.get("yes_levels", [])
+        no_levels = cache.get("no_levels", [])
+
+        yes_best = yes_levels[0][1] if yes_levels else None
+        no_best = no_levels[0][1] if no_levels else None
+        yes_total = sum(qty for _, qty in yes_levels) if yes_levels else None
+        no_total = sum(qty for _, qty in no_levels) if no_levels else None
+
+        return {
+            "yes_best_bid_depth": yes_best,
+            "no_best_bid_depth": no_best,
+            "yes_total_depth": yes_total,
+            "no_total_depth": no_total,
+            "yes_levels": len(yes_levels),
+            "no_levels": len(no_levels),
+        }
+
+    # =========================================================================
     # Enrichment
     # =========================================================================
 
@@ -534,6 +627,7 @@ class WSCollector:
                 "sigma_distance": model.get("sigma_distance"),
                 "mispricing_yes": mispricing_yes,
                 "mispricing_no": mispricing_no,
+                **self._get_orderbook_depth(ticker),
             })
 
         if rows:
@@ -593,6 +687,7 @@ class WSCollector:
         print(f"Deribit refresh: every {self.deribit_interval}s")
         print(f"Market metadata refresh: every {self.market_refresh_interval}s")
         print(f"Flush to disk: every {self.flush_interval}s")
+        print(f"Orderbook depth: every {self.orderbook_interval}s (markets in IV grid only)")
         print(f"Data dir: {self.data_dir}")
         print(f"{'=' * 70}")
 
@@ -653,6 +748,7 @@ class WSCollector:
         tasks = [
             asyncio.create_task(self._refresh_deribit_loop()),
             asyncio.create_task(self._refresh_markets_loop()),
+            asyncio.create_task(self._refresh_orderbooks_loop()),
             asyncio.create_task(self._flush_loop()),
             asyncio.create_task(self._stats_loop()),
             asyncio.create_task(self._health_check_loop()),
