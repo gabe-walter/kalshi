@@ -97,9 +97,9 @@ class WSCollector:
         self.iv_surfaces: Dict[str, object] = {}
         self.spots: Dict[str, float] = {}
 
-        # Orderbook depth cache: ticker -> {yes_levels: [...], no_levels: [...], fetched_at: str}
-        self.orderbook_cache: Dict[str, dict] = {}
-        self.orderbook_interval = flush_interval  # sync with flush cycle
+        # Live orderbook state: ticker -> {yes: {price: qty}, no: {price: qty}}
+        # Maintained in real-time via orderbook_delta WS channel
+        self.orderbooks: Dict[str, dict] = {}
 
         # Stats
         self.ticker_count = 0
@@ -392,68 +392,69 @@ class WSCollector:
                 print(f"  [Deribit] Error fetching {asset}: {e}")
 
     # =========================================================================
-    # Orderbook Depth
+    # Orderbook (real-time via WS orderbook_delta channel)
     # =========================================================================
 
-    async def _refresh_orderbooks_loop(self):
-        while self._running:
-            try:
-                await self._refresh_orderbooks()
-            except Exception as e:
-                print(f"  [Orderbook] Error: {e}")
-            await asyncio.sleep(self.orderbook_interval)
-
-    async def _refresh_orderbooks(self):
-        """Fetch orderbook depth for markets within the IV grid."""
-        loop = asyncio.get_event_loop()
-        now = datetime.now(timezone.utc)
-
-        # Only fetch for markets that have model_prob (within IV grid)
-        candidates = []
-        for ticker in self.latest_ticker:
-            model = self._compute_model_prob(ticker)
-            if model.get("model_prob") is not None:
-                candidates.append(ticker)
-
-        if not candidates:
+    def _on_orderbook_snapshot(self, msg: dict):
+        """Handle full orderbook snapshot — replaces local state entirely."""
+        ticker = msg.get("market_ticker", "")
+        if not any(ticker.startswith(p) for p in CRYPTO_PREFIXES):
             return
 
-        fetched = 0
-        errors = 0
-        for ticker in candidates:
-            try:
-                result = await loop.run_in_executor(
-                    None,
-                    lambda t=ticker: self.kalshi_rest.get_market_orderbook(t, depth=20),
-                )
-                book = result.get("orderbook", {})
-                self.orderbook_cache[ticker] = {
-                    "yes_levels": book.get("yes", []) or [],
-                    "no_levels": book.get("no", []) or [],
-                    "fetched_at": now.isoformat(),
-                }
-                fetched += 1
-                await asyncio.sleep(0.15)  # rate limit: ~7 req/s
-            except Exception:
-                errors += 1
+        self._last_message_time = datetime.now(timezone.utc)
 
-        print(f"  [Orderbook] Fetched {fetched}/{len(candidates)} books "
-              f"({errors} errors)")
+        yes_levels = {}
+        no_levels = {}
+        for price, qty in (msg.get("yes", []) or []):
+            if qty > 0:
+                yes_levels[price] = qty
+        for price, qty in (msg.get("no", []) or []):
+            if qty > 0:
+                no_levels[price] = qty
+
+        self.orderbooks[ticker] = {"yes": yes_levels, "no": no_levels}
+
+    def _on_orderbook_delta(self, msg: dict):
+        """Handle incremental orderbook update — apply delta to local state."""
+        ticker = msg.get("market_ticker", "")
+        if not any(ticker.startswith(p) for p in CRYPTO_PREFIXES):
+            return
+
+        self._last_message_time = datetime.now(timezone.utc)
+
+        book = self.orderbooks.get(ticker)
+        if book is None:
+            # No snapshot yet for this ticker; delta alone is useless
+            return
+
+        # Apply yes-side deltas
+        for price, qty in (msg.get("yes", []) or []):
+            if qty <= 0:
+                book["yes"].pop(price, None)
+            else:
+                book["yes"][price] = qty
+
+        # Apply no-side deltas
+        for price, qty in (msg.get("no", []) or []):
+            if qty <= 0:
+                book["no"].pop(price, None)
+            else:
+                book["no"][price] = qty
 
     def _get_orderbook_depth(self, ticker: str) -> dict:
         """
-        Extract depth summary from cached orderbook.
+        Extract depth summary from live orderbook state.
 
         Returns dict with:
           yes_best_bid_depth: contracts available at best yes bid
           no_best_bid_depth: contracts available at best no bid
           yes_total_depth: total yes bid depth across all levels
           no_total_depth: total no bid depth across all levels
-          yes_levels: number of price levels with bids
-          no_levels: number of price levels with bids
+          yes_levels: number of yes price levels
+          no_levels: number of no price levels
         """
-        cache = self.orderbook_cache.get(ticker)
-        if not cache:
+        book = self.orderbooks.get(ticker)
+        if not book:
             return {
                 "yes_best_bid_depth": None,
                 "no_best_bid_depth": None,
@@ -463,21 +464,20 @@ class WSCollector:
                 "no_levels": None,
             }
 
-        yes_levels = cache.get("yes_levels", [])
-        no_levels = cache.get("no_levels", [])
+        yes = book.get("yes", {})
+        no = book.get("no", {})
 
-        yes_best = yes_levels[0][1] if yes_levels else None
-        no_best = no_levels[0][1] if no_levels else None
-        yes_total = sum(qty for _, qty in yes_levels) if yes_levels else None
-        no_total = sum(qty for _, qty in no_levels) if no_levels else None
+        # Best bid = highest price with quantity
+        yes_best = yes.get(max(yes)) if yes else None
+        no_best = no.get(max(no)) if no else None
 
         return {
             "yes_best_bid_depth": yes_best,
             "no_best_bid_depth": no_best,
-            "yes_total_depth": yes_total,
-            "no_total_depth": no_total,
-            "yes_levels": len(yes_levels),
-            "no_levels": len(no_levels),
+            "yes_total_depth": sum(yes.values()) if yes else None,
+            "no_total_depth": sum(no.values()) if no else None,
+            "yes_levels": len(yes) if yes else None,
+            "no_levels": len(no) if no else None,
         }
 
     # =========================================================================
@@ -687,7 +687,7 @@ class WSCollector:
         print(f"Deribit refresh: every {self.deribit_interval}s")
         print(f"Market metadata refresh: every {self.market_refresh_interval}s")
         print(f"Flush to disk: every {self.flush_interval}s")
-        print(f"Orderbook depth: every {self.orderbook_interval}s (markets in IV grid only)")
+        print(f"Orderbook depth: real-time via WS orderbook_delta channel")
         print(f"Data dir: {self.data_dir}")
         print(f"{'=' * 70}")
 
@@ -738,17 +738,17 @@ class WSCollector:
         self._reconnect_count = 0  # Reset on successful connection
         self._last_message_time = datetime.now(timezone.utc)
 
-        # Subscribe to all ticker and trade updates (filter in handler)
-        print("[4] Subscribing to ticker + trade channels (all markets)...")
+        # Subscribe to ticker, trade, and orderbook channels (filter in handler)
+        print("[4] Subscribing to ticker + trade + orderbook_delta channels...")
         await self._ws_subscribe(["ticker"])
         await self._ws_subscribe(["trade"])
+        await self._ws_subscribe(["orderbook_delta"])
         print("  Subscribed. Listening for messages...\n")
 
         # Start background tasks
         tasks = [
             asyncio.create_task(self._refresh_deribit_loop()),
             asyncio.create_task(self._refresh_markets_loop()),
-            asyncio.create_task(self._refresh_orderbooks_loop()),
             asyncio.create_task(self._flush_loop()),
             asyncio.create_task(self._stats_loop()),
             asyncio.create_task(self._health_check_loop()),
@@ -767,6 +767,10 @@ class WSCollector:
                         self._on_ticker(data.get("msg", {}))
                     elif msg_type == "trade":
                         self._on_trade(data.get("msg", {}))
+                    elif msg_type == "orderbook_snapshot":
+                        self._on_orderbook_snapshot(data.get("msg", {}))
+                    elif msg_type == "orderbook_delta":
+                        self._on_orderbook_delta(data.get("msg", {}))
                     elif msg_type == "subscribed":
                         sid = data.get("sid")
                         channel = data.get("msg", {}).get("channel", "?")
